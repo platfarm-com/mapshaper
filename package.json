@@ -35,6 +35,7 @@
 		"derequire": "~2.0.6",
 		"flatbush": "^3.1.0",
 		"iconv-lite": "0.4.24",
+		"lodash": "~4.17.15",
 		"mproj": "0.0.23",
 		"opn": "^6.0.0",
 		"optimist": "~0.6.0",
@@ -42,7 +43,7 @@
 		"sync-request": "6.1.0"
 	},
 	"devDependencies": {
-		"browserify": "^16.2.3",
+		"browserify": "~16.5.0",
 		"catty": "0.0.8",
 		"deep-eql": "4.0.0",
 		"mocha": "6.1.4",
