@@ -66,7 +66,8 @@ function toByteArray (b64) {
     ? validLen - 4
     : validLen
 
-  for (var i = 0; i < len; i += 4) {
+  var i
+  for (i = 0; i < len; i += 4) {
     tmp =
       (revLookup[b64.charCodeAt(i)] << 18) |
       (revLookup[b64.charCodeAt(i + 1)] << 12) |
@@ -154,303 +155,6 @@ function fromByteArray (uint8) {
 },{}],2:[function(require,module,exports){
 
 },{}],3:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-/*<replacement>*/
-
-var Buffer = require('safe-buffer').Buffer;
-/*</replacement>*/
-
-var isEncoding = Buffer.isEncoding || function (encoding) {
-  encoding = '' + encoding;
-  switch (encoding && encoding.toLowerCase()) {
-    case 'hex':case 'utf8':case 'utf-8':case 'ascii':case 'binary':case 'base64':case 'ucs2':case 'ucs-2':case 'utf16le':case 'utf-16le':case 'raw':
-      return true;
-    default:
-      return false;
-  }
-};
-
-function _normalizeEncoding(enc) {
-  if (!enc) return 'utf8';
-  var retried;
-  while (true) {
-    switch (enc) {
-      case 'utf8':
-      case 'utf-8':
-        return 'utf8';
-      case 'ucs2':
-      case 'ucs-2':
-      case 'utf16le':
-      case 'utf-16le':
-        return 'utf16le';
-      case 'latin1':
-      case 'binary':
-        return 'latin1';
-      case 'base64':
-      case 'ascii':
-      case 'hex':
-        return enc;
-      default:
-        if (retried) return; // undefined
-        enc = ('' + enc).toLowerCase();
-        retried = true;
-    }
-  }
-};
-
-// Do not cache `Buffer.isEncoding` when checking encoding names as some
-// modules monkey-patch it to support additional encodings
-function normalizeEncoding(enc) {
-  var nenc = _normalizeEncoding(enc);
-  if (typeof nenc !== 'string' && (Buffer.isEncoding === isEncoding || !isEncoding(enc))) throw new Error('Unknown encoding: ' + enc);
-  return nenc || enc;
-}
-
-// StringDecoder provides an interface for efficiently splitting a series of
-// buffers into a series of JS strings without breaking apart multi-byte
-// characters.
-exports.StringDecoder = StringDecoder;
-function StringDecoder(encoding) {
-  this.encoding = normalizeEncoding(encoding);
-  var nb;
-  switch (this.encoding) {
-    case 'utf16le':
-      this.text = utf16Text;
-      this.end = utf16End;
-      nb = 4;
-      break;
-    case 'utf8':
-      this.fillLast = utf8FillLast;
-      nb = 4;
-      break;
-    case 'base64':
-      this.text = base64Text;
-      this.end = base64End;
-      nb = 3;
-      break;
-    default:
-      this.write = simpleWrite;
-      this.end = simpleEnd;
-      return;
-  }
-  this.lastNeed = 0;
-  this.lastTotal = 0;
-  this.lastChar = Buffer.allocUnsafe(nb);
-}
-
-StringDecoder.prototype.write = function (buf) {
-  if (buf.length === 0) return '';
-  var r;
-  var i;
-  if (this.lastNeed) {
-    r = this.fillLast(buf);
-    if (r === undefined) return '';
-    i = this.lastNeed;
-    this.lastNeed = 0;
-  } else {
-    i = 0;
-  }
-  if (i < buf.length) return r ? r + this.text(buf, i) : this.text(buf, i);
-  return r || '';
-};
-
-StringDecoder.prototype.end = utf8End;
-
-// Returns only complete characters in a Buffer
-StringDecoder.prototype.text = utf8Text;
-
-// Attempts to complete a partial non-UTF-8 character using bytes from a Buffer
-StringDecoder.prototype.fillLast = function (buf) {
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, buf.length);
-  this.lastNeed -= buf.length;
-};
-
-// Checks the type of a UTF-8 byte, whether it's ASCII, a leading byte, or a
-// continuation byte. If an invalid byte is detected, -2 is returned.
-function utf8CheckByte(byte) {
-  if (byte <= 0x7F) return 0;else if (byte >> 5 === 0x06) return 2;else if (byte >> 4 === 0x0E) return 3;else if (byte >> 3 === 0x1E) return 4;
-  return byte >> 6 === 0x02 ? -1 : -2;
-}
-
-// Checks at most 3 bytes at the end of a Buffer in order to detect an
-// incomplete multi-byte UTF-8 character. The total number of bytes (2, 3, or 4)
-// needed to complete the UTF-8 character (if applicable) are returned.
-function utf8CheckIncomplete(self, buf, i) {
-  var j = buf.length - 1;
-  if (j < i) return 0;
-  var nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 1;
-    return nb;
-  }
-  if (--j < i || nb === -2) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) self.lastNeed = nb - 2;
-    return nb;
-  }
-  if (--j < i || nb === -2) return 0;
-  nb = utf8CheckByte(buf[j]);
-  if (nb >= 0) {
-    if (nb > 0) {
-      if (nb === 2) nb = 0;else self.lastNeed = nb - 3;
-    }
-    return nb;
-  }
-  return 0;
-}
-
-// Validates as many continuation bytes for a multi-byte UTF-8 character as
-// needed or are available. If we see a non-continuation byte where we expect
-// one, we "replace" the validated continuation bytes we've seen so far with
-// a single UTF-8 replacement character ('\ufffd'), to match v8's UTF-8 decoding
-// behavior. The continuation byte check is included three times in the case
-// where all of the continuation bytes for a character exist in the same buffer.
-// It is also done this way as a slight performance increase instead of using a
-// loop.
-function utf8CheckExtraBytes(self, buf, p) {
-  if ((buf[0] & 0xC0) !== 0x80) {
-    self.lastNeed = 0;
-    return '\ufffd';
-  }
-  if (self.lastNeed > 1 && buf.length > 1) {
-    if ((buf[1] & 0xC0) !== 0x80) {
-      self.lastNeed = 1;
-      return '\ufffd';
-    }
-    if (self.lastNeed > 2 && buf.length > 2) {
-      if ((buf[2] & 0xC0) !== 0x80) {
-        self.lastNeed = 2;
-        return '\ufffd';
-      }
-    }
-  }
-}
-
-// Attempts to complete a multi-byte UTF-8 character using bytes from a Buffer.
-function utf8FillLast(buf) {
-  var p = this.lastTotal - this.lastNeed;
-  var r = utf8CheckExtraBytes(this, buf, p);
-  if (r !== undefined) return r;
-  if (this.lastNeed <= buf.length) {
-    buf.copy(this.lastChar, p, 0, this.lastNeed);
-    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
-  }
-  buf.copy(this.lastChar, p, 0, buf.length);
-  this.lastNeed -= buf.length;
-}
-
-// Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
-// partial character, the character's bytes are buffered until the required
-// number of bytes are available.
-function utf8Text(buf, i) {
-  var total = utf8CheckIncomplete(this, buf, i);
-  if (!this.lastNeed) return buf.toString('utf8', i);
-  this.lastTotal = total;
-  var end = buf.length - (total - this.lastNeed);
-  buf.copy(this.lastChar, 0, end);
-  return buf.toString('utf8', i, end);
-}
-
-// For UTF-8, a replacement character is added when ending on a partial
-// character.
-function utf8End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + '\ufffd';
-  return r;
-}
-
-// UTF-16LE typically needs two bytes per character, but even if we have an even
-// number of bytes available, we need to check if we end on a leading/high
-// surrogate. In that case, we need to wait for the next two bytes in order to
-// decode the last character properly.
-function utf16Text(buf, i) {
-  if ((buf.length - i) % 2 === 0) {
-    var r = buf.toString('utf16le', i);
-    if (r) {
-      var c = r.charCodeAt(r.length - 1);
-      if (c >= 0xD800 && c <= 0xDBFF) {
-        this.lastNeed = 2;
-        this.lastTotal = 4;
-        this.lastChar[0] = buf[buf.length - 2];
-        this.lastChar[1] = buf[buf.length - 1];
-        return r.slice(0, -1);
-      }
-    }
-    return r;
-  }
-  this.lastNeed = 1;
-  this.lastTotal = 2;
-  this.lastChar[0] = buf[buf.length - 1];
-  return buf.toString('utf16le', i, buf.length - 1);
-}
-
-// For UTF-16LE we do not explicitly append special replacement characters if we
-// end on a partial character, we simply let v8 handle that.
-function utf16End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) {
-    var end = this.lastTotal - this.lastNeed;
-    return r + this.lastChar.toString('utf16le', 0, end);
-  }
-  return r;
-}
-
-function base64Text(buf, i) {
-  var n = (buf.length - i) % 3;
-  if (n === 0) return buf.toString('base64', i);
-  this.lastNeed = 3 - n;
-  this.lastTotal = 3;
-  if (n === 1) {
-    this.lastChar[0] = buf[buf.length - 1];
-  } else {
-    this.lastChar[0] = buf[buf.length - 2];
-    this.lastChar[1] = buf[buf.length - 1];
-  }
-  return buf.toString('base64', i, buf.length - n);
-}
-
-function base64End(buf) {
-  var r = buf && buf.length ? this.write(buf) : '';
-  if (this.lastNeed) return r + this.lastChar.toString('base64', 0, 3 - this.lastNeed);
-  return r;
-}
-
-// Pass bytes on through for single-byte encodings (e.g. ascii, latin1, hex)
-function simpleWrite(buf) {
-  return buf.toString(this.encoding);
-}
-
-function simpleEnd(buf) {
-  return buf && buf.length ? this.write(buf) : '';
-}
-},{"safe-buffer":31}],4:[function(require,module,exports){
 "use strict";
 var Buffer = require("safer-buffer").Buffer;
 
@@ -1007,7 +711,7 @@ function findIdx(table, val) {
 }
 
 
-},{"safer-buffer":32}],5:[function(require,module,exports){
+},{"safer-buffer":31}],4:[function(require,module,exports){
 "use strict";
 
 // Description of supported double byte encodings and aliases.
@@ -1185,7 +889,7 @@ module.exports = {
     'xxbig5': 'big5hkscs',
 };
 
-},{"./tables/big5-added.json":11,"./tables/cp936.json":12,"./tables/cp949.json":13,"./tables/cp950.json":14,"./tables/eucjp.json":15,"./tables/gb18030-ranges.json":16,"./tables/gbk-added.json":17,"./tables/shiftjis.json":18}],6:[function(require,module,exports){
+},{"./tables/big5-added.json":10,"./tables/cp936.json":11,"./tables/cp949.json":12,"./tables/cp950.json":13,"./tables/eucjp.json":14,"./tables/gb18030-ranges.json":15,"./tables/gbk-added.json":16,"./tables/shiftjis.json":17}],5:[function(require,module,exports){
 "use strict";
 
 // Update this array if you add/rename/remove files in this directory.
@@ -1209,7 +913,7 @@ for (var i = 0; i < modules.length; i++) {
             exports[enc] = module[enc];
 }
 
-},{"./dbcs-codec":4,"./dbcs-data":5,"./internal":7,"./sbcs-codec":8,"./sbcs-data":10,"./sbcs-data-generated":9,"./utf16":19,"./utf7":20}],7:[function(require,module,exports){
+},{"./dbcs-codec":3,"./dbcs-data":4,"./internal":6,"./sbcs-codec":7,"./sbcs-data":9,"./sbcs-data-generated":8,"./utf16":18,"./utf7":19}],6:[function(require,module,exports){
 "use strict";
 var Buffer = require("safer-buffer").Buffer;
 
@@ -1399,7 +1103,7 @@ InternalDecoderCesu8.prototype.end = function() {
     return res;
 }
 
-},{"safer-buffer":32,"string_decoder":3}],8:[function(require,module,exports){
+},{"safer-buffer":31,"string_decoder":32}],7:[function(require,module,exports){
 "use strict";
 var Buffer = require("safer-buffer").Buffer;
 
@@ -1473,7 +1177,7 @@ SBCSDecoder.prototype.write = function(buf) {
 SBCSDecoder.prototype.end = function() {
 }
 
-},{"safer-buffer":32}],9:[function(require,module,exports){
+},{"safer-buffer":31}],8:[function(require,module,exports){
 "use strict";
 
 // Generated data for sbcs codec. Don't edit manually. Regenerate using generation/gen-sbcs.js script.
@@ -1925,7 +1629,7 @@ module.exports = {
     "chars": "���������������������������������กขฃคฅฆงจฉชซฌญฎฏฐฑฒณดตถทธนบปผฝพฟภมยรฤลฦวศษสหฬอฮฯะัาำิีึืฺุู����฿เแโใไๅๆ็่้๊๋์ํ๎๏๐๑๒๓๔๕๖๗๘๙๚๛����"
   }
 }
-},{}],10:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
 "use strict";
 
 // Manually added data to be used by sbcs codec in addition to generated one.
@@ -2101,7 +1805,7 @@ module.exports = {
 };
 
 
-},{}],11:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 module.exports=[
 ["8740","䏰䰲䘃䖦䕸𧉧䵷䖳𧲱䳢𧳅㮕䜶䝄䱇䱀𤊿𣘗𧍒𦺋𧃒䱗𪍑䝏䗚䲅𧱬䴇䪤䚡𦬣爥𥩔𡩣𣸆𣽡晍囻"],
 ["8767","綕夝𨮹㷴霴𧯯寛𡵞媤㘥𩺰嫑宷峼杮薓𩥅瑡璝㡵𡵓𣚞𦀡㻬"],
@@ -2225,7 +1929,7 @@ module.exports=[
 ["fea1","𤅟𤩹𨮏孆𨰃𡢞瓈𡦈甎瓩甞𨻙𡩋寗𨺬鎅畍畊畧畮𤾂㼄𤴓疎瑝疞疴瘂瘬癑癏癯癶𦏵皐臯㟸𦤑𦤎皡皥皷盌𦾟葢𥂝𥅽𡸜眞眦着撯𥈠睘𣊬瞯𨥤𨥨𡛁矴砉𡍶𤨒棊碯磇磓隥礮𥗠磗礴碱𧘌辸袄𨬫𦂃𢘜禆褀椂禀𥡗禝𧬹礼禩渪𧄦㺨秆𩄍秔"]
 ]
 
-},{}],12:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 module.exports=[
 ["0","\u0000",127,"€"],
 ["8140","丂丄丅丆丏丒丗丟丠両丣並丩丮丯丱丳丵丷丼乀乁乂乄乆乊乑乕乗乚乛乢乣乤乥乧乨乪",5,"乲乴",9,"乿",6,"亇亊"],
@@ -2491,7 +2195,7 @@ module.exports=[
 ["fe40","兀嗀﨎﨏﨑﨓﨔礼﨟蘒﨡﨣﨤﨧﨨﨩"]
 ]
 
-},{}],13:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 module.exports=[
 ["0","\u0000",127],
 ["8141","갂갃갅갆갋",4,"갘갞갟갡갢갣갥",6,"갮갲갳갴"],
@@ -2766,7 +2470,7 @@ module.exports=[
 ["fda1","爻肴酵驍侯候厚后吼喉嗅帿後朽煦珝逅勛勳塤壎焄熏燻薰訓暈薨喧暄煊萱卉喙毁彙徽揮暉煇諱輝麾休携烋畦虧恤譎鷸兇凶匈洶胸黑昕欣炘痕吃屹紇訖欠欽歆吸恰洽翕興僖凞喜噫囍姬嬉希憙憘戱晞曦熙熹熺犧禧稀羲詰"]
 ]
 
-},{}],14:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 module.exports=[
 ["0","\u0000",127],
 ["a140","　，、。．‧；：？！︰…‥﹐﹑﹒·﹔﹕﹖﹗｜–︱—︳╴︴﹏（）︵︶｛｝︷︸〔〕︹︺【】︻︼《》︽︾〈〉︿﹀「」﹁﹂『』﹃﹄﹙﹚"],
@@ -2945,7 +2649,7 @@ module.exports=[
 ["f9a1","龤灨灥糷虪蠾蠽蠿讞貜躩軉靋顳顴飌饡馫驤驦驧鬤鸕鸗齈戇欞爧虌躨钂钀钁驩驨鬮鸙爩虋讟钃鱹麷癵驫鱺鸝灩灪麤齾齉龘碁銹裏墻恒粧嫺╔╦╗╠╬╣╚╩╝╒╤╕╞╪╡╘╧╛╓╥╖╟╫╢╙╨╜║═╭╮╰╯▓"]
 ]
 
-},{}],15:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 module.exports=[
 ["0","\u0000",127],
 ["8ea1","｡",62],
@@ -3129,9 +2833,9 @@ module.exports=[
 ["8feda1","黸黿鼂鼃鼉鼏鼐鼑鼒鼔鼖鼗鼙鼚鼛鼟鼢鼦鼪鼫鼯鼱鼲鼴鼷鼹鼺鼼鼽鼿齁齃",4,"齓齕齖齗齘齚齝齞齨齩齭",4,"齳齵齺齽龏龐龑龒龔龖龗龞龡龢龣龥"]
 ]
 
-},{}],16:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 module.exports={"uChars":[128,165,169,178,184,216,226,235,238,244,248,251,253,258,276,284,300,325,329,334,364,463,465,467,469,471,473,475,477,506,594,610,712,716,730,930,938,962,970,1026,1104,1106,8209,8215,8218,8222,8231,8241,8244,8246,8252,8365,8452,8454,8458,8471,8482,8556,8570,8596,8602,8713,8720,8722,8726,8731,8737,8740,8742,8748,8751,8760,8766,8777,8781,8787,8802,8808,8816,8854,8858,8870,8896,8979,9322,9372,9548,9588,9616,9622,9634,9652,9662,9672,9676,9680,9702,9735,9738,9793,9795,11906,11909,11913,11917,11928,11944,11947,11951,11956,11960,11964,11979,12284,12292,12312,12319,12330,12351,12436,12447,12535,12543,12586,12842,12850,12964,13200,13215,13218,13253,13263,13267,13270,13384,13428,13727,13839,13851,14617,14703,14801,14816,14964,15183,15471,15585,16471,16736,17208,17325,17330,17374,17623,17997,18018,18212,18218,18301,18318,18760,18811,18814,18820,18823,18844,18848,18872,19576,19620,19738,19887,40870,59244,59336,59367,59413,59417,59423,59431,59437,59443,59452,59460,59478,59493,63789,63866,63894,63976,63986,64016,64018,64021,64025,64034,64037,64042,65074,65093,65107,65112,65127,65132,65375,65510,65536],"gbChars":[0,36,38,45,50,81,89,95,96,100,103,104,105,109,126,133,148,172,175,179,208,306,307,308,309,310,311,312,313,341,428,443,544,545,558,741,742,749,750,805,819,820,7922,7924,7925,7927,7934,7943,7944,7945,7950,8062,8148,8149,8152,8164,8174,8236,8240,8262,8264,8374,8380,8381,8384,8388,8390,8392,8393,8394,8396,8401,8406,8416,8419,8424,8437,8439,8445,8482,8485,8496,8521,8603,8936,8946,9046,9050,9063,9066,9076,9092,9100,9108,9111,9113,9131,9162,9164,9218,9219,11329,11331,11334,11336,11346,11361,11363,11366,11370,11372,11375,11389,11682,11686,11687,11692,11694,11714,11716,11723,11725,11730,11736,11982,11989,12102,12336,12348,12350,12384,12393,12395,12397,12510,12553,12851,12962,12973,13738,13823,13919,13933,14080,14298,14585,14698,15583,15847,16318,16434,16438,16481,16729,17102,17122,17315,17320,17402,17418,17859,17909,17911,17915,17916,17936,17939,17961,18664,18703,18814,18962,19043,33469,33470,33471,33484,33485,33490,33497,33501,33505,33513,33520,33536,33550,37845,37921,37948,38029,38038,38064,38065,38066,38069,38075,38076,38078,39108,39109,39113,39114,39115,39116,39265,39394,189000]}
-},{}],17:[function(require,module,exports){
+},{}],16:[function(require,module,exports){
 module.exports=[
 ["a140","",62],
 ["a180","",32],
@@ -3188,7 +2892,7 @@ module.exports=[
 ["fe80","䜣䜩䝼䞍⻊䥇䥺䥽䦂䦃䦅䦆䦟䦛䦷䦶䲣䲟䲠䲡䱷䲢䴓",6,"䶮",93]
 ]
 
-},{}],18:[function(require,module,exports){
+},{}],17:[function(require,module,exports){
 module.exports=[
 ["0","\u0000",128],
 ["a1","｡",62],
@@ -3315,7 +3019,7 @@ module.exports=[
 ["fc40","髜魵魲鮏鮱鮻鰀鵰鵫鶴鸙黑"]
 ]
 
-},{}],19:[function(require,module,exports){
+},{}],18:[function(require,module,exports){
 "use strict";
 var Buffer = require("safer-buffer").Buffer;
 
@@ -3494,7 +3198,7 @@ function detectEncoding(buf, defaultEncoding) {
 
 
 
-},{"safer-buffer":32}],20:[function(require,module,exports){
+},{"safer-buffer":31}],19:[function(require,module,exports){
 "use strict";
 var Buffer = require("safer-buffer").Buffer;
 
@@ -3786,7 +3490,7 @@ Utf7IMAPDecoder.prototype.end = function() {
 
 
 
-},{"safer-buffer":32}],21:[function(require,module,exports){
+},{"safer-buffer":31}],20:[function(require,module,exports){
 "use strict";
 
 var BOMChar = '\uFEFF';
@@ -3840,7 +3544,7 @@ StripBOMWrapper.prototype.end = function() {
 }
 
 
-},{}],22:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = (nBytes * 8) - mLen - 1
@@ -3926,7 +3630,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],23:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -4112,7 +3816,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],24:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 var slice = Array.prototype.slice;
 
 function dashify(method, file) {
@@ -4128,7 +3832,7 @@ exports.readFileSync = dashify(require("./read-file-sync"), "/dev/stdin");
 exports.writeFile = dashify(require("./write-file"), "/dev/stdout");
 exports.writeFileSync = dashify(require("./write-file-sync"), "/dev/stdout");
 
-},{"./read-file":28,"./read-file-sync":27,"./write-file":30,"./write-file-sync":29}],25:[function(require,module,exports){
+},{"./read-file":27,"./read-file-sync":26,"./write-file":29,"./write-file-sync":28}],24:[function(require,module,exports){
 (function (Buffer){
 module.exports = function(options) {
   if (options) {
@@ -4155,7 +3859,7 @@ function encoding(encoding) {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":"buffer"}],26:[function(require,module,exports){
+},{"buffer":"buffer"}],25:[function(require,module,exports){
 (function (Buffer){
 module.exports = function(data, options) {
   return typeof data === "string"
@@ -4166,7 +3870,7 @@ module.exports = function(data, options) {
 };
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":"buffer"}],27:[function(require,module,exports){
+},{"buffer":"buffer"}],26:[function(require,module,exports){
 (function (Buffer){
 var fs = require("fs"),
     decode = require("./decode");
@@ -4199,7 +3903,7 @@ module.exports = function(filename, options) {
 var bufferSize = 1 << 16;
 
 }).call(this,require("buffer").Buffer)
-},{"./decode":25,"buffer":"buffer","fs":"fs"}],28:[function(require,module,exports){
+},{"./decode":24,"buffer":"buffer","fs":"fs"}],27:[function(require,module,exports){
 (function (process){
 var fs = require("fs"),
     decode = require("./decode");
@@ -4226,7 +3930,7 @@ function readStream(stream, options, callback) {
 }
 
 }).call(this,require('_process'))
-},{"./decode":25,"_process":23,"fs":"fs"}],29:[function(require,module,exports){
+},{"./decode":24,"_process":22,"fs":"fs"}],28:[function(require,module,exports){
 var fs = require("fs"),
     encode = require("./encode");
 
@@ -4260,7 +3964,7 @@ module.exports = function(filename, data, options) {
   }
 };
 
-},{"./encode":26,"fs":"fs"}],30:[function(require,module,exports){
+},{"./encode":25,"fs":"fs"}],29:[function(require,module,exports){
 (function (process){
 var fs = require("fs"),
     encode = require("./encode");
@@ -4286,7 +3990,7 @@ function writeStream(stream, send, data, options, callback) {
 }
 
 }).call(this,require('_process'))
-},{"./encode":26,"_process":23,"fs":"fs"}],31:[function(require,module,exports){
+},{"./encode":25,"_process":22,"fs":"fs"}],30:[function(require,module,exports){
 /* eslint-disable node/no-deprecated-api */
 var buffer = require('buffer')
 var Buffer = buffer.Buffer
@@ -4350,7 +4054,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":"buffer"}],32:[function(require,module,exports){
+},{"buffer":"buffer"}],31:[function(require,module,exports){
 (function (process){
 /* eslint-disable node/no-deprecated-api */
 
@@ -4431,7 +4135,305 @@ if (!safer.constants) {
 module.exports = safer
 
 }).call(this,require('_process'))
-},{"_process":23,"buffer":"buffer"}],"buffer":[function(require,module,exports){
+},{"_process":22,"buffer":"buffer"}],32:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+'use strict';
+
+/*<replacement>*/
+
+var Buffer = require('safe-buffer').Buffer;
+/*</replacement>*/
+
+var isEncoding = Buffer.isEncoding || function (encoding) {
+  encoding = '' + encoding;
+  switch (encoding && encoding.toLowerCase()) {
+    case 'hex':case 'utf8':case 'utf-8':case 'ascii':case 'binary':case 'base64':case 'ucs2':case 'ucs-2':case 'utf16le':case 'utf-16le':case 'raw':
+      return true;
+    default:
+      return false;
+  }
+};
+
+function _normalizeEncoding(enc) {
+  if (!enc) return 'utf8';
+  var retried;
+  while (true) {
+    switch (enc) {
+      case 'utf8':
+      case 'utf-8':
+        return 'utf8';
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return 'utf16le';
+      case 'latin1':
+      case 'binary':
+        return 'latin1';
+      case 'base64':
+      case 'ascii':
+      case 'hex':
+        return enc;
+      default:
+        if (retried) return; // undefined
+        enc = ('' + enc).toLowerCase();
+        retried = true;
+    }
+  }
+};
+
+// Do not cache `Buffer.isEncoding` when checking encoding names as some
+// modules monkey-patch it to support additional encodings
+function normalizeEncoding(enc) {
+  var nenc = _normalizeEncoding(enc);
+  if (typeof nenc !== 'string' && (Buffer.isEncoding === isEncoding || !isEncoding(enc))) throw new Error('Unknown encoding: ' + enc);
+  return nenc || enc;
+}
+
+// StringDecoder provides an interface for efficiently splitting a series of
+// buffers into a series of JS strings without breaking apart multi-byte
+// characters.
+exports.StringDecoder = StringDecoder;
+function StringDecoder(encoding) {
+  this.encoding = normalizeEncoding(encoding);
+  var nb;
+  switch (this.encoding) {
+    case 'utf16le':
+      this.text = utf16Text;
+      this.end = utf16End;
+      nb = 4;
+      break;
+    case 'utf8':
+      this.fillLast = utf8FillLast;
+      nb = 4;
+      break;
+    case 'base64':
+      this.text = base64Text;
+      this.end = base64End;
+      nb = 3;
+      break;
+    default:
+      this.write = simpleWrite;
+      this.end = simpleEnd;
+      return;
+  }
+  this.lastNeed = 0;
+  this.lastTotal = 0;
+  this.lastChar = Buffer.allocUnsafe(nb);
+}
+
+StringDecoder.prototype.write = function (buf) {
+  if (buf.length === 0) return '';
+  var r;
+  var i;
+  if (this.lastNeed) {
+    r = this.fillLast(buf);
+    if (r === undefined) return '';
+    i = this.lastNeed;
+    this.lastNeed = 0;
+  } else {
+    i = 0;
+  }
+  if (i < buf.length) return r ? r + this.text(buf, i) : this.text(buf, i);
+  return r || '';
+};
+
+StringDecoder.prototype.end = utf8End;
+
+// Returns only complete characters in a Buffer
+StringDecoder.prototype.text = utf8Text;
+
+// Attempts to complete a partial non-UTF-8 character using bytes from a Buffer
+StringDecoder.prototype.fillLast = function (buf) {
+  if (this.lastNeed <= buf.length) {
+    buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, this.lastNeed);
+    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
+  }
+  buf.copy(this.lastChar, this.lastTotal - this.lastNeed, 0, buf.length);
+  this.lastNeed -= buf.length;
+};
+
+// Checks the type of a UTF-8 byte, whether it's ASCII, a leading byte, or a
+// continuation byte. If an invalid byte is detected, -2 is returned.
+function utf8CheckByte(byte) {
+  if (byte <= 0x7F) return 0;else if (byte >> 5 === 0x06) return 2;else if (byte >> 4 === 0x0E) return 3;else if (byte >> 3 === 0x1E) return 4;
+  return byte >> 6 === 0x02 ? -1 : -2;
+}
+
+// Checks at most 3 bytes at the end of a Buffer in order to detect an
+// incomplete multi-byte UTF-8 character. The total number of bytes (2, 3, or 4)
+// needed to complete the UTF-8 character (if applicable) are returned.
+function utf8CheckIncomplete(self, buf, i) {
+  var j = buf.length - 1;
+  if (j < i) return 0;
+  var nb = utf8CheckByte(buf[j]);
+  if (nb >= 0) {
+    if (nb > 0) self.lastNeed = nb - 1;
+    return nb;
+  }
+  if (--j < i || nb === -2) return 0;
+  nb = utf8CheckByte(buf[j]);
+  if (nb >= 0) {
+    if (nb > 0) self.lastNeed = nb - 2;
+    return nb;
+  }
+  if (--j < i || nb === -2) return 0;
+  nb = utf8CheckByte(buf[j]);
+  if (nb >= 0) {
+    if (nb > 0) {
+      if (nb === 2) nb = 0;else self.lastNeed = nb - 3;
+    }
+    return nb;
+  }
+  return 0;
+}
+
+// Validates as many continuation bytes for a multi-byte UTF-8 character as
+// needed or are available. If we see a non-continuation byte where we expect
+// one, we "replace" the validated continuation bytes we've seen so far with
+// a single UTF-8 replacement character ('\ufffd'), to match v8's UTF-8 decoding
+// behavior. The continuation byte check is included three times in the case
+// where all of the continuation bytes for a character exist in the same buffer.
+// It is also done this way as a slight performance increase instead of using a
+// loop.
+function utf8CheckExtraBytes(self, buf, p) {
+  if ((buf[0] & 0xC0) !== 0x80) {
+    self.lastNeed = 0;
+    return '\ufffd';
+  }
+  if (self.lastNeed > 1 && buf.length > 1) {
+    if ((buf[1] & 0xC0) !== 0x80) {
+      self.lastNeed = 1;
+      return '\ufffd';
+    }
+    if (self.lastNeed > 2 && buf.length > 2) {
+      if ((buf[2] & 0xC0) !== 0x80) {
+        self.lastNeed = 2;
+        return '\ufffd';
+      }
+    }
+  }
+}
+
+// Attempts to complete a multi-byte UTF-8 character using bytes from a Buffer.
+function utf8FillLast(buf) {
+  var p = this.lastTotal - this.lastNeed;
+  var r = utf8CheckExtraBytes(this, buf, p);
+  if (r !== undefined) return r;
+  if (this.lastNeed <= buf.length) {
+    buf.copy(this.lastChar, p, 0, this.lastNeed);
+    return this.lastChar.toString(this.encoding, 0, this.lastTotal);
+  }
+  buf.copy(this.lastChar, p, 0, buf.length);
+  this.lastNeed -= buf.length;
+}
+
+// Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
+// partial character, the character's bytes are buffered until the required
+// number of bytes are available.
+function utf8Text(buf, i) {
+  var total = utf8CheckIncomplete(this, buf, i);
+  if (!this.lastNeed) return buf.toString('utf8', i);
+  this.lastTotal = total;
+  var end = buf.length - (total - this.lastNeed);
+  buf.copy(this.lastChar, 0, end);
+  return buf.toString('utf8', i, end);
+}
+
+// For UTF-8, a replacement character is added when ending on a partial
+// character.
+function utf8End(buf) {
+  var r = buf && buf.length ? this.write(buf) : '';
+  if (this.lastNeed) return r + '\ufffd';
+  return r;
+}
+
+// UTF-16LE typically needs two bytes per character, but even if we have an even
+// number of bytes available, we need to check if we end on a leading/high
+// surrogate. In that case, we need to wait for the next two bytes in order to
+// decode the last character properly.
+function utf16Text(buf, i) {
+  if ((buf.length - i) % 2 === 0) {
+    var r = buf.toString('utf16le', i);
+    if (r) {
+      var c = r.charCodeAt(r.length - 1);
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        this.lastNeed = 2;
+        this.lastTotal = 4;
+        this.lastChar[0] = buf[buf.length - 2];
+        this.lastChar[1] = buf[buf.length - 1];
+        return r.slice(0, -1);
+      }
+    }
+    return r;
+  }
+  this.lastNeed = 1;
+  this.lastTotal = 2;
+  this.lastChar[0] = buf[buf.length - 1];
+  return buf.toString('utf16le', i, buf.length - 1);
+}
+
+// For UTF-16LE we do not explicitly append special replacement characters if we
+// end on a partial character, we simply let v8 handle that.
+function utf16End(buf) {
+  var r = buf && buf.length ? this.write(buf) : '';
+  if (this.lastNeed) {
+    var end = this.lastTotal - this.lastNeed;
+    return r + this.lastChar.toString('utf16le', 0, end);
+  }
+  return r;
+}
+
+function base64Text(buf, i) {
+  var n = (buf.length - i) % 3;
+  if (n === 0) return buf.toString('base64', i);
+  this.lastNeed = 3 - n;
+  this.lastTotal = 3;
+  if (n === 1) {
+    this.lastChar[0] = buf[buf.length - 1];
+  } else {
+    this.lastChar[0] = buf[buf.length - 2];
+    this.lastChar[1] = buf[buf.length - 1];
+  }
+  return buf.toString('base64', i, buf.length - n);
+}
+
+function base64End(buf) {
+  var r = buf && buf.length ? this.write(buf) : '';
+  if (this.lastNeed) return r + this.lastChar.toString('base64', 0, 3 - this.lastNeed);
+  return r;
+}
+
+// Pass bytes on through for single-byte encodings (e.g. ascii, latin1, hex)
+function simpleWrite(buf) {
+  return buf.toString(this.encoding);
+}
+
+function simpleEnd(buf) {
+  return buf && buf.length ? this.write(buf) : '';
+}
+},{"safe-buffer":30}],"buffer":[function(require,module,exports){
+(function (Buffer){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -4444,6 +4446,7 @@ module.exports = safer
 
 var base64 = require('base64-js')
 var ieee754 = require('ieee754')
+var customInspectSymbol = typeof Symbol === 'function' ? Symbol.for('nodejs.util.inspect.custom') : null
 
 exports.Buffer = Buffer
 exports.SlowBuffer = SlowBuffer
@@ -4480,7 +4483,9 @@ function typedArraySupport () {
   // Can typed array instances can be augmented?
   try {
     var arr = new Uint8Array(1)
-    arr.__proto__ = { __proto__: Uint8Array.prototype, foo: function () { return 42 } }
+    var proto = { foo: function () { return 42 } }
+    Object.setPrototypeOf(proto, Uint8Array.prototype)
+    Object.setPrototypeOf(arr, proto)
     return arr.foo() === 42
   } catch (e) {
     return false
@@ -4509,7 +4514,7 @@ function createBuffer (length) {
   }
   // Return an augmented `Uint8Array` instance
   var buf = new Uint8Array(length)
-  buf.__proto__ = Buffer.prototype
+  Object.setPrototypeOf(buf, Buffer.prototype)
   return buf
 }
 
@@ -4559,7 +4564,7 @@ function from (value, encodingOrOffset, length) {
   }
 
   if (value == null) {
-    throw TypeError(
+    throw new TypeError(
       'The first argument must be one of type string, Buffer, ArrayBuffer, Array, ' +
       'or Array-like Object. Received type ' + (typeof value)
     )
@@ -4611,8 +4616,8 @@ Buffer.from = function (value, encodingOrOffset, length) {
 
 // Note: Change prototype *after* Buffer.from is defined to workaround Chrome bug:
 // https://github.com/feross/buffer/pull/148
-Buffer.prototype.__proto__ = Uint8Array.prototype
-Buffer.__proto__ = Uint8Array
+Object.setPrototypeOf(Buffer.prototype, Uint8Array.prototype)
+Object.setPrototypeOf(Buffer, Uint8Array)
 
 function assertSize (size) {
   if (typeof size !== 'number') {
@@ -4716,7 +4721,8 @@ function fromArrayBuffer (array, byteOffset, length) {
   }
 
   // Return an augmented `Uint8Array` instance
-  buf.__proto__ = Buffer.prototype
+  Object.setPrototypeOf(buf, Buffer.prototype)
+
   return buf
 }
 
@@ -5038,6 +5044,9 @@ Buffer.prototype.inspect = function inspect () {
   if (this.length > max) str += ' ... '
   return '<Buffer ' + str + '>'
 }
+if (customInspectSymbol) {
+  Buffer.prototype[customInspectSymbol] = Buffer.prototype.inspect
+}
 
 Buffer.prototype.compare = function compare (target, start, end, thisStart, thisEnd) {
   if (isInstance(target, Uint8Array)) {
@@ -5163,7 +5172,7 @@ function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
         return Uint8Array.prototype.lastIndexOf.call(buffer, val, byteOffset)
       }
     }
-    return arrayIndexOf(buffer, [ val ], byteOffset, encoding, dir)
+    return arrayIndexOf(buffer, [val], byteOffset, encoding, dir)
   }
 
   throw new TypeError('val must be string, number or Buffer')
@@ -5529,7 +5538,8 @@ Buffer.prototype.slice = function slice (start, end) {
 
   var newBuf = this.subarray(start, end)
   // Return an augmented `Uint8Array` instance
-  newBuf.__proto__ = Buffer.prototype
+  Object.setPrototypeOf(newBuf, Buffer.prototype)
+
   return newBuf
 }
 
@@ -6210,8 +6220,9 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-},{"base64-js":1,"ieee754":22}],"d3-dsv":[function(require,module,exports){
-// https://d3js.org/d3-dsv/ v1.0.10 Copyright 2018 Mike Bostock
+}).call(this,require("buffer").Buffer)
+},{"base64-js":1,"buffer":"buffer","ieee754":21}],"d3-dsv":[function(require,module,exports){
+// https://d3js.org/d3-dsv/ v1.1.1 Copyright 2019 Mike Bostock
 (function (global, factory) {
 typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
 typeof define === 'function' && define.amd ? define(['exports'], factory) :
@@ -6251,6 +6262,30 @@ function inferColumns(rows) {
   });
 
   return columns;
+}
+
+function pad(value, width) {
+  var s = value + "", length = s.length;
+  return length < width ? new Array(width - length + 1).join(0) + s : s;
+}
+
+function formatYear(year) {
+  return year < 0 ? "-" + pad(-year, 6)
+    : year > 9999 ? "+" + pad(year, 6)
+    : pad(year, 4);
+}
+
+function formatDate(date) {
+  var hours = date.getUTCHours(),
+      minutes = date.getUTCMinutes(),
+      seconds = date.getUTCSeconds(),
+      milliseconds = date.getUTCMilliseconds();
+  return isNaN(date) ? "Invalid Date"
+      : formatYear(date.getUTCFullYear(), 4) + "-" + pad(date.getUTCMonth() + 1, 2) + "-" + pad(date.getUTCDate(), 2)
+      + (milliseconds ? "T" + pad(hours, 2) + ":" + pad(minutes, 2) + ":" + pad(seconds, 2) + "." + pad(milliseconds, 3) + "Z"
+      : seconds ? "T" + pad(hours, 2) + ":" + pad(minutes, 2) + ":" + pad(seconds, 2) + "Z"
+      : minutes || hours ? "T" + pad(hours, 2) + ":" + pad(minutes, 2) + "Z"
+      : "");
 }
 
 function dsv(delimiter) {
@@ -6315,13 +6350,22 @@ function dsv(delimiter) {
     return rows;
   }
 
-  function format(rows, columns) {
-    if (columns == null) columns = inferColumns(rows);
-    return [columns.map(formatValue).join(delimiter)].concat(rows.map(function(row) {
+  function preformatBody(rows, columns) {
+    return rows.map(function(row) {
       return columns.map(function(column) {
         return formatValue(row[column]);
       }).join(delimiter);
-    })).join("\n");
+    });
+  }
+
+  function format(rows, columns) {
+    if (columns == null) columns = inferColumns(rows);
+    return [columns.map(formatValue).join(delimiter)].concat(preformatBody(rows, columns)).join("\n");
+  }
+
+  function formatBody(rows, columns) {
+    if (columns == null) columns = inferColumns(rows);
+    return preformatBody(rows, columns).join("\n");
   }
 
   function formatRows(rows) {
@@ -6332,16 +6376,18 @@ function dsv(delimiter) {
     return row.map(formatValue).join(delimiter);
   }
 
-  function formatValue(text) {
-    return text == null ? ""
-        : reFormat.test(text += "") ? "\"" + text.replace(/"/g, "\"\"") + "\""
-        : text;
+  function formatValue(value) {
+    return value == null ? ""
+        : value instanceof Date ? formatDate(value)
+        : reFormat.test(value += "") ? "\"" + value.replace(/"/g, "\"\"") + "\""
+        : value;
   }
 
   return {
     parse: parse,
     parseRows: parseRows,
     format: format,
+    formatBody: formatBody,
     formatRows: formatRows
   };
 }
@@ -6351,6 +6397,7 @@ var csv = dsv(",");
 var csvParse = csv.parse;
 var csvParseRows = csv.parseRows;
 var csvFormat = csv.format;
+var csvFormatBody = csv.formatBody;
 var csvFormatRows = csv.formatRows;
 
 var tsv = dsv("\t");
@@ -6358,17 +6405,36 @@ var tsv = dsv("\t");
 var tsvParse = tsv.parse;
 var tsvParseRows = tsv.parseRows;
 var tsvFormat = tsv.format;
+var tsvFormatBody = tsv.formatBody;
 var tsvFormatRows = tsv.formatRows;
+
+function autoType(object) {
+  for (var key in object) {
+    var value = object[key].trim(), number;
+    if (!value) value = null;
+    else if (value === "true") value = true;
+    else if (value === "false") value = false;
+    else if (value === "NaN") value = NaN;
+    else if (!isNaN(number = +value)) value = number;
+    else if (/^([-+]\d{2})?\d{4}(-\d{2}(-\d{2})?)?(T\d{2}:\d{2}(:\d{2}(\.\d{3})?)?(Z|[-+]\d{2}:\d{2})?)?$/.test(value)) value = new Date(value);
+    else continue;
+    object[key] = value;
+  }
+  return object;
+}
 
 exports.dsvFormat = dsv;
 exports.csvParse = csvParse;
 exports.csvParseRows = csvParseRows;
 exports.csvFormat = csvFormat;
+exports.csvFormatBody = csvFormatBody;
 exports.csvFormatRows = csvFormatRows;
 exports.tsvParse = tsvParse;
 exports.tsvParseRows = tsvParseRows;
 exports.tsvFormat = tsvFormat;
+exports.tsvFormatBody = tsvFormatBody;
 exports.tsvFormatRows = tsvFormatRows;
+exports.autoType = autoType;
 
 Object.defineProperty(exports, '__esModule', { value: true });
 
@@ -6378,8 +6444,8 @@ Object.defineProperty(exports, '__esModule', { value: true });
 (function (global, factory) {
     typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
     typeof define === 'function' && define.amd ? define(factory) :
-    (global.Flatbush = factory());
-}(this, (function () { 'use strict';
+    (global = global || self, global.Flatbush = factory());
+}(this, function () { 'use strict';
 
     var FlatQueue = function FlatQueue() {
         this.ids = [];
@@ -6392,18 +6458,16 @@ Object.defineProperty(exports, '__esModule', { value: true });
     };
 
     FlatQueue.prototype.push = function push (id, value) {
-            var this$1 = this;
-
         this.ids.push(id);
         this.values.push(value);
 
         var pos = this.length++;
         while (pos > 0) {
             var parent = (pos - 1) >> 1;
-            var parentValue = this$1.values[parent];
+            var parentValue = this.values[parent];
             if (value >= parentValue) { break; }
-            this$1.ids[pos] = this$1.ids[parent];
-            this$1.values[pos] = parentValue;
+            this.ids[pos] = this.ids[parent];
+            this.values[pos] = parentValue;
             pos = parent;
         }
 
@@ -6412,8 +6476,6 @@ Object.defineProperty(exports, '__esModule', { value: true });
     };
 
     FlatQueue.prototype.pop = function pop () {
-            var this$1 = this;
-
         if (this.length === 0) { return undefined; }
 
         var top = this.ids[0];
@@ -6428,19 +6490,19 @@ Object.defineProperty(exports, '__esModule', { value: true });
             while (pos < halfLength) {
                 var left = (pos << 1) + 1;
                 var right = left + 1;
-                var bestIndex = this$1.ids[left];
-                var bestValue = this$1.values[left];
-                var rightValue = this$1.values[right];
+                var bestIndex = this.ids[left];
+                var bestValue = this.values[left];
+                var rightValue = this.values[right];
 
-                if (right < this$1.length && rightValue < bestValue) {
+                if (right < this.length && rightValue < bestValue) {
                     left = right;
-                    bestIndex = this$1.ids[right];
+                    bestIndex = this.ids[right];
                     bestValue = rightValue;
                 }
                 if (bestValue >= value) { break; }
 
-                this$1.ids[pos] = bestIndex;
-                this$1.values[pos] = bestValue;
+                this.ids[pos] = bestIndex;
+                this.values[pos] = bestValue;
                 pos = left;
             }
 
@@ -6470,7 +6532,6 @@ Object.defineProperty(exports, '__esModule', { value: true });
     var VERSION = 3; // serialized format version
 
     var Flatbush = function Flatbush(numItems, nodeSize, ArrayType, data) {
-        var this$1 = this;
         if ( nodeSize === void 0 ) nodeSize = 16;
         if ( ArrayType === void 0 ) ArrayType = Float64Array;
 
@@ -6486,9 +6547,9 @@ Object.defineProperty(exports, '__esModule', { value: true });
         var numNodes = n;
         this._levelBounds = [n * 4];
         do {
-            n = Math.ceil(n / this$1.nodeSize);
+            n = Math.ceil(n / this.nodeSize);
             numNodes += n;
-            this$1._levelBounds.push(numNodes * 4);
+            this._levelBounds.push(numNodes * 4);
         } while (n !== 1);
 
         this.ArrayType = ArrayType || Float64Array;
@@ -6528,7 +6589,7 @@ Object.defineProperty(exports, '__esModule', { value: true });
         }
 
         // a priority queue for k-nearest-neighbors queries
-        this.queue = new FlatQueue();
+        this._queue = new FlatQueue();
     };
 
     Flatbush.from = function from (data) {
@@ -6567,8 +6628,6 @@ Object.defineProperty(exports, '__esModule', { value: true });
     };
 
     Flatbush.prototype.finish = function finish () {
-            var this$1 = this;
-
         if (this._pos >> 2 !== this.numItems) {
             throw new Error(("Added " + (this._pos >> 2) + " items when expected " + (this.numItems) + "."));
         }
@@ -6581,12 +6640,12 @@ Object.defineProperty(exports, '__esModule', { value: true });
         // map item centers into Hilbert coordinate space and calculate Hilbert values
         for (var i = 0; i < this.numItems; i++) {
             var pos = 4 * i;
-            var minX = this$1._boxes[pos++];
-            var minY = this$1._boxes[pos++];
-            var maxX = this$1._boxes[pos++];
-            var maxY = this$1._boxes[pos++];
-            var x = Math.floor(hilbertMax * ((minX + maxX) / 2 - this$1.minX) / width);
-            var y = Math.floor(hilbertMax * ((minY + maxY) / 2 - this$1.minY) / height);
+            var minX = this._boxes[pos++];
+            var minY = this._boxes[pos++];
+            var maxX = this._boxes[pos++];
+            var maxY = this._boxes[pos++];
+            var x = Math.floor(hilbertMax * ((minX + maxX) / 2 - this.minX) / width);
+            var y = Math.floor(hilbertMax * ((minY + maxY) / 2 - this.minY) / height);
             hilbertValues[i] = hilbert(x, y);
         }
 
@@ -6595,7 +6654,7 @@ Object.defineProperty(exports, '__esModule', { value: true });
 
         // generate nodes at each tree level, bottom-up
         for (var i$1 = 0, pos$1 = 0; i$1 < this._levelBounds.length - 1; i$1++) {
-            var end = this$1._levelBounds[i$1];
+            var end = this._levelBounds[i$1];
 
             // generate a parent node for each block of consecutive <nodeSize> nodes
             while (pos$1 < end) {
@@ -6607,10 +6666,10 @@ Object.defineProperty(exports, '__esModule', { value: true });
 
                 // calculate bbox for the new node
                 for (var i$2 = 0; i$2 < this.nodeSize && pos$1 < end; i$2++) {
-                    var minX$1 = this$1._boxes[pos$1++];
-                    var minY$1 = this$1._boxes[pos$1++];
-                    var maxX$1 = this$1._boxes[pos$1++];
-                    var maxY$1 = this$1._boxes[pos$1++];
+                    var minX$1 = this._boxes[pos$1++];
+                    var minY$1 = this._boxes[pos$1++];
+                    var maxX$1 = this._boxes[pos$1++];
+                    var maxY$1 = this._boxes[pos$1++];
                     if (minX$1 < nodeMinX) { nodeMinX = minX$1; }
                     if (minY$1 < nodeMinY) { nodeMinY = minY$1; }
                     if (maxX$1 > nodeMaxX) { nodeMaxX = maxX$1; }
@@ -6618,18 +6677,16 @@ Object.defineProperty(exports, '__esModule', { value: true });
                 }
 
                 // add the new node to the tree data
-                this$1._indices[this$1._pos >> 2] = nodeIndex;
-                this$1._boxes[this$1._pos++] = nodeMinX;
-                this$1._boxes[this$1._pos++] = nodeMinY;
-                this$1._boxes[this$1._pos++] = nodeMaxX;
-                this$1._boxes[this$1._pos++] = nodeMaxY;
+                this._indices[this._pos >> 2] = nodeIndex;
+                this._boxes[this._pos++] = nodeMinX;
+                this._boxes[this._pos++] = nodeMinY;
+                this._boxes[this._pos++] = nodeMaxX;
+                this._boxes[this._pos++] = nodeMaxY;
             }
         }
     };
 
     Flatbush.prototype.search = function search (minX, minY, maxX, maxY, filterFn) {
-            var this$1 = this;
-
         if (this._pos !== this._boxes.length) {
             throw new Error('Data not yet indexed - call index.finish().');
         }
@@ -6641,19 +6698,19 @@ Object.defineProperty(exports, '__esModule', { value: true });
 
         while (nodeIndex !== undefined) {
             // find the end index of the node
-            var end = Math.min(nodeIndex + this$1.nodeSize * 4, this$1._levelBounds[level]);
+            var end = Math.min(nodeIndex + this.nodeSize * 4, this._levelBounds[level]);
 
             // search through child nodes
             for (var pos = nodeIndex; pos < end; pos += 4) {
-                var index = this$1._indices[pos >> 2];
+                var index = this._indices[pos >> 2] | 0;
 
                 // check if node bbox intersects with query bbox
-                if (maxX < this$1._boxes[pos]) { continue; } // maxX < nodeMinX
-                if (maxY < this$1._boxes[pos + 1]) { continue; } // maxY < nodeMinY
-                if (minX > this$1._boxes[pos + 2]) { continue; } // minX > nodeMaxX
-                if (minY > this$1._boxes[pos + 3]) { continue; } // minY > nodeMaxY
+                if (maxX < this._boxes[pos]) { continue; } // maxX < nodeMinX
+                if (maxY < this._boxes[pos + 1]) { continue; } // maxY < nodeMinY
+                if (minX > this._boxes[pos + 2]) { continue; } // minX > nodeMaxX
+                if (minY > this._boxes[pos + 3]) { continue; } // minY > nodeMaxY
 
-                if (nodeIndex < this$1.numItems * 4) {
+                if (nodeIndex < this.numItems * 4) {
                     if (filterFn === undefined || filterFn(index)) {
                         results.push(index); // leaf item
                     }
@@ -6672,7 +6729,6 @@ Object.defineProperty(exports, '__esModule', { value: true });
     };
 
     Flatbush.prototype.neighbors = function neighbors (x, y, maxResults, maxDistance, filterFn) {
-            var this$1 = this;
             if ( maxResults === void 0 ) maxResults = Infinity;
             if ( maxDistance === void 0 ) maxDistance = Infinity;
 
@@ -6681,23 +6737,23 @@ Object.defineProperty(exports, '__esModule', { value: true });
         }
 
         var nodeIndex = this._boxes.length - 4;
-        var q = this.queue;
+        var q = this._queue;
         var results = [];
         var maxDistSquared = maxDistance * maxDistance;
 
         while (nodeIndex !== undefined) {
             // find the end index of the node
-            var end = Math.min(nodeIndex + this$1.nodeSize * 4, upperBound(nodeIndex, this$1._levelBounds));
+            var end = Math.min(nodeIndex + this.nodeSize * 4, upperBound(nodeIndex, this._levelBounds));
 
             // add child nodes to the queue
             for (var pos = nodeIndex; pos < end; pos += 4) {
-                var index = this$1._indices[pos >> 2];
+                var index = this._indices[pos >> 2] | 0;
 
-                var dx = axisDist(x, this$1._boxes[pos], this$1._boxes[pos + 2]);
-                var dy = axisDist(y, this$1._boxes[pos + 1], this$1._boxes[pos + 3]);
+                var dx = axisDist(x, this._boxes[pos], this._boxes[pos + 2]);
+                var dy = axisDist(y, this._boxes[pos + 1], this._boxes[pos + 3]);
                 var dist = dx * dx + dy * dy;
 
-                if (nodeIndex < this$1.numItems * 4) { // leaf node
+                if (nodeIndex < this.numItems * 4) { // leaf node
                     if (filterFn === undefined || filterFn(index)) {
                         // put a negative index if it's an item rather than a node, to recognize later
                         q.push(-index - 1, dist);
@@ -6844,7 +6900,7 @@ Object.defineProperty(exports, '__esModule', { value: true });
 
     return Flatbush;
 
-})));
+}));
 
 },{}],"fs":[function(require,module,exports){
 arguments[4][2][0].apply(exports,arguments)
@@ -7005,7 +7061,7 @@ if ("Ā" != "\u0100") {
 }
 
 }).call(this,require('_process'))
-},{"../encodings":6,"./bom-handling":21,"./extend-node":2,"./streams":2,"_process":23,"safer-buffer":32}],"mproj":[function(require,module,exports){
+},{"../encodings":5,"./bom-handling":20,"./extend-node":2,"./streams":2,"_process":22,"safer-buffer":31}],"mproj":[function(require,module,exports){
 (function (__filename){
 (function(){
 
@@ -9579,7 +9635,6 @@ function wkt_proj4_is_omerc_B(P) {
   http://geotiff.maptools.org/proj_list/polar_stereographic.html
   http://geotiff.maptools.org/proj_list/stereographic.html
   http://geotiff.maptools.org/proj_list/random_issues.html#stereographic
-
 */
 
 add_wkt_parser(get_simple_parser_test('Stereographic,Polar_Stereographic,Stereographic_North_Pole,Stereographic_South_Pole'),
@@ -9868,219 +9923,6 @@ function wkt_to_proj4(str) {
   return proj4;
 }
 
-
-
-function pj_qsfn(sinphi, e, one_es) {
-  var EPS = 1e-7;
-  var con;
-  if (e >= EPS) {
-    con = e * sinphi;
-    // Proj.4 check for div0 and returns HUGE_VAL
-    // this returns +/- Infinity; effect should be same
-    return (one_es * (sinphi / (1 - con * con) -
-       (0.5 / e) * log ((1 - con) / (1 + con))));
-  } else
-    return (sinphi + sinphi);
-}
-
-
-function pj_msfn(sinphi, cosphi, es) {
-  return (cosphi / sqrt (1 - es * sinphi * sinphi));
-}
-
-
-pj_add(pj_aea, 'aea', 'Albers Equal Area', '\n\tConic Sph&Ell\n\tlat_1= lat_2=');
-pj_add(pj_leac, 'leac', 'Lambert Equal Area Conic', '\n\tConic, Sph&Ell\n\tlat_1= south');
-
-function pj_aea(P) {
-  var phi1 = pj_param(P.params, "rlat_1");
-  var phi2 = pj_param(P.params, "rlat_2");
-  pj_aea_init(P, phi1, phi2);
-}
-
-function pj_leac(P) {
-  var phi1 = pj_param(P.params, "rlat_1");
-  var phi2 = pj_param(P.params, "bsouth") ? -M_HALFPI : M_HALFPI;
-  pj_aea_init(P, phi1, phi2);
-}
-
-function pj_aea_init(P, phi1, phi2) {
-  var ec, n, c, dd, n2, rho0, rho, en, ellips,
-      cosphi, sinphi, secant, ml2, m2, ml1, m1;
-
-  P.fwd = e_fwd;
-  P.inv = e_inv;
-
-  if (fabs(phi1 + phi2) < EPS10) e_error(-21);
-  n = sinphi = sin(phi1);
-  cosphi = cos(phi1);
-  secant = fabs(phi1 - phi2) >= EPS10;
-  if ((ellips = (P.es > 0))) {
-    en = pj_enfn(P.es);
-    m1 = pj_msfn(sinphi, cosphi, P.es);
-    ml1 = pj_qsfn(sinphi, P.e, P.one_es);
-    if (secant) { /* secant cone */
-      sinphi = sin(phi2);
-      cosphi = cos(phi2);
-      m2 = pj_msfn(sinphi, cosphi, P.es);
-      ml2 = pj_qsfn(sinphi, P.e, P.one_es);
-      // Ignoring Proj.4 div0 check (above checks should prevent this)
-      n = (m1 * m1 - m2 * m2) / (ml2 - ml1);
-    }
-    ec = 1 - 0.5 * P.one_es * log((1 - P.e) / (1 + P.e)) / P.e;
-    c = m1 * m1 + n * ml1;
-    dd = 1 / n;
-    rho0 = dd * sqrt(c - n * pj_qsfn(sin(P.phi0), P.e, P.one_es));
-  } else {
-    if (secant) n = 0.5 * (n + sin(phi2));
-    n2 = n + n;
-    c = cosphi * cosphi + n2 * sinphi;
-    dd = 1 / n;
-    rho0 = dd * sqrt(c - n2 * sin(P.phi0));
-  }
-
-  function e_fwd(lp, xy) {
-    var lam = lp.lam;
-    var rho;
-    if ((rho = c - (ellips ? n * pj_qsfn(sin(lp.phi),
-      P.e, P.one_es) : n2 * sin(lp.phi))) < 0) f_error();
-    rho = dd * sqrt(rho);
-    xy.x = rho * sin(lam *= n);
-    xy.y = rho0 - rho * cos(lam);
-  }
-
-  function e_inv(xy, lp) {
-    var TOL7 = 1e-7,
-        x = xy.x,
-        y = rho0 - xy.y,
-        rho = hypot(x, y);
-    if (rho != 0) {
-      if (n < 0) {
-        rho = -rho;
-        x = -x;
-        y = -y;
-      }
-      lp.phi = rho / dd;
-      if (ellips) {
-        lp.phi = (c - lp.phi * lp.phi) / n;
-        if (fabs(ec - fabs(lp.phi)) > TOL7) {
-          if ((lp.phi = phi1_(lp.phi, P.e, P.one_es)) == HUGE_VAL)
-            i_error();
-        } else
-          lp.phi = lp.phi < 0 ? -M_HALFPI : M_HALFPI;
-      } else if (fabs(lp.phi = (c - lp.phi * lp.phi) / n2) <= 1)
-        lp.phi = asin(lp.phi);
-      else
-        lp.phi = lp.phi < 0 ? -M_HALFPI : M_HALFPI;
-      lp.lam = atan2(x, y) / n;
-    } else {
-      lp.lam = 0;
-      lp.phi = n > 0 ? M_HALFPI : -M_HALFPI;
-    }
-  }
-
-  /* determine latitude angle phi-1 */
-  function phi1_(qs, Te, Tone_es) {
-    var N_ITER = 15,
-        EPSILON = 1e-7,
-        TOL = 1e-10;
-    var Phi, sinpi, cospi, con, com, dphi, i;
-    Phi = asin (0.5 * qs);
-    if (Te < EPSILON)
-      return Phi;
-    i = N_ITER;
-    do {
-      sinpi = sin(Phi);
-      cospi = cos(Phi);
-      con = Te * sinpi;
-      com = 1 - con * con;
-      dphi = 0.5 * com * com / cospi * (qs / Tone_es -
-         sinpi / com + 0.5 / Te * log ((1 - con) / (1 + con)));
-      Phi += dphi;
-    } while (fabs(dphi) > TOL && --i);
-    return i ? Phi : HUGE_VAL;
-  }
-}
-
-
-
-function pj_enfn(es) {
-  var C00 = 1,
-      C02 = 0.25,
-      C04 = 0.046875,
-      C06 = 0.01953125,
-      C08 = 0.01068115234375,
-      C22 = 0.75,
-      C44 = 0.46875,
-      C46 = 0.01302083333333333333,
-      C48 = 0.00712076822916666666,
-      C66 = 0.36458333333333333333,
-      C68 = 0.00569661458333333333,
-      C88 = 0.3076171875;
-  var en = [], t;
-  en[0] = C00 - es * (C02 + es * (C04 + es * (C06 + es * C08)));
-  en[1] = es * (C22 - es * (C04 + es * (C06 + es * C08)));
-  en[2] = (t = es * es) * (C44 - es * (C46 + es * C48));
-  en[3] = (t *= es) * (C66 - es * C68);
-  en[4] = t * es * C88;
-  return en;
-}
-
-function pj_mlfn(phi, sphi, cphi, en) {
-  cphi *= sphi;
-  sphi *= sphi;
-  return (en[0] * phi - cphi * (en[1] + sphi*(en[2] + sphi*(en[3] + sphi*en[4]))));
-}
-
-function pj_inv_mlfn(arg, es, en) {
-  var EPS = 1e-11,
-      MAX_ITER = 10,
-      EN_SIZE = 5;
-
-  var k = 1 / (1 - es),
-      s, t, phi;
-
-  phi = arg;
-  for (var i = MAX_ITER; i>0; --i) { /* rarely goes over 2 iterations */
-    s = sin(phi);
-    t = 1 - es * s * s;
-    phi -= t = (pj_mlfn(phi, s, cos(phi), en) - arg) * (t * sqrt(t)) * k;
-    if (fabs(t) < EPS) {
-      return phi;
-    }
-  }
-  pj_ctx_set_errno( ctx, -17 );
-  return phi;
-}
-
-
-
-function aasin(v) {
-  var ONE_TOL = 1.00000000000001;
-  var av = fabs(v);
-  if (av >= 1) {
-    if (av > ONE_TOL) pj_ctx_set_errno(-19);
-    return v < 0 ? -M_HALFPI : M_HALFPI;
-  }
-  return asin(v);
-}
-
-function aacos(v) {
-  var ONE_TOL = 1.00000000000001;
-  var av = fabs(v);
-  if (av >= 1) {
-    if (av > ONE_TOL) pj_ctx_set_errno(-19);
-    return (v < 0 ? M_PI : 0);
-  }
-  return acos(v);
-}
-
-function asqrt(v) { return ((v <= 0) ? 0 : sqrt(v)); }
-
-function aatan2(n, d) {
-  var ATOL = 1e-50;
-  return ((fabs(n) < ATOL && fabs(d) < ATOL) ? 0 : atan2(n,d));
-}
 
 
 /*
@@ -12318,6 +12160,542 @@ GeographicLib.PolygonArea = {};
   };
 
 })(GeographicLib.Geodesic, GeographicLib.GeodesicLine, GeographicLib.Math);
+
+
+/*
+ * PolygonArea.js
+ * Transcription of PolygonArea.[ch]pp into JavaScript.
+ *
+ * See the documentation for the C++ class.  The conversion is a literal
+ * conversion from C++.
+ *
+ * The algorithms are derived in
+ *
+ *    Charles F. F. Karney,
+ *    Algorithms for geodesics, J. Geodesy 87, 43-55 (2013);
+ *    https://doi.org/10.1007/s00190-012-0578-z
+ *    Addenda: https://geographiclib.sourceforge.io/geod-addenda.html
+ *
+ * Copyright (c) Charles Karney (2011-2017) <charles@karney.com> and licensed
+ * under the MIT/X11 License.  For more information, see
+ * https://geographiclib.sourceforge.io/
+ */
+
+// Load AFTER GeographicLib/Math.js and GeographicLib/Geodesic.js
+
+(function(
+  /**
+   * @exports GeographicLib/PolygonArea
+   * @description Compute the area of geodesic polygons via the
+   *   {@link module:GeographicLib/PolygonArea.PolygonArea PolygonArea}
+   *   class.
+   */
+  p, g, m, a) {
+
+  var transit, transitdirect;
+  transit = function(lon1, lon2) {
+    // Return 1 or -1 if crossing prime meridian in east or west direction.
+    // Otherwise return zero.
+    var lon12, cross;
+    // Compute lon12 the same way as Geodesic::Inverse.
+    lon1 = m.AngNormalize(lon1);
+    lon2 = m.AngNormalize(lon2);
+    lon12 = m.AngDiff(lon1, lon2).s;
+    cross = lon1 <= 0 && lon2 > 0 && lon12 > 0 ? 1 :
+      (lon2 <= 0 && lon1 > 0 && lon12 < 0 ? -1 : 0);
+    return cross;
+  };
+
+  // an alternate version of transit to deal with longitudes in the direct
+  // problem.
+  transitdirect = function(lon1, lon2) {
+    // We want to compute exactly
+    //   int(floor(lon2 / 360)) - int(floor(lon1 / 360))
+    // Since we only need the parity of the result we can use std::remquo but
+    // this is buggy with g++ 4.8.3 and requires C++11.  So instead we do
+    lon1 = lon1 % 720.0; lon2 = lon2 % 720.0;
+    return ( ((lon2 >= 0 && lon2 < 360) || lon2 < -360 ? 0 : 1) -
+             ((lon1 >= 0 && lon1 < 360) || lon1 < -360 ? 0 : 1) );
+  };
+
+  /**
+   * @class
+   * @property {number} a the equatorial radius (meters).
+   * @property {number} f the flattening.
+   * @property {bool} polyline whether the PolygonArea object describes a
+   *   polyline or a polygon.
+   * @property {number} num the number of vertices so far.
+   * @property {number} lat the current latitude (degrees).
+   * @property {number} lon the current longitude (degrees).
+   * @summary Initialize a PolygonArea object.
+   * @classdesc Computes the area and perimeter of a geodesic polygon.
+   *   This object is usually instantiated by
+   *   {@link module:GeographicLib/Geodesic.Geodesic#Polygon Geodesic.Polygon}.
+   * @param {object} geod a {@link module:GeographicLib/Geodesic.Geodesic
+   *   Geodesic} object.
+   * @param {bool} [polyline = false] if true the new PolygonArea object
+   *   describes a polyline instead of a polygon.
+   */
+  p.PolygonArea = function(geod, polyline) {
+    this._geod = geod;
+    this.a = this._geod.a;
+    this.f = this._geod.f;
+    this._area0 = 4 * Math.PI * geod._c2;
+    this.polyline = !polyline ? false : polyline;
+    this._mask = g.LATITUDE | g.LONGITUDE | g.DISTANCE |
+          (this.polyline ? g.NONE : g.AREA | g.LONG_UNROLL);
+    if (!this.polyline)
+      this._areasum = new a.Accumulator(0);
+    this._perimetersum = new a.Accumulator(0);
+    this.Clear();
+  };
+
+  /**
+   * @summary Clear the PolygonArea object, setting the number of vertices to
+   *   0.
+   */
+  p.PolygonArea.prototype.Clear = function() {
+    this.num = 0;
+    this._crossings = 0;
+    if (!this.polyline)
+      this._areasum.Set(0);
+    this._perimetersum.Set(0);
+    this._lat0 = this._lon0 = this.lat = this.lon = Number.NaN;
+  };
+
+  /**
+   * @summary Add the next vertex to the polygon.
+   * @param {number} lat the latitude of the point (degrees).
+   * @param {number} lon the longitude of the point (degrees).
+   * @description This adds an edge from the current vertex to the new vertex.
+   */
+  p.PolygonArea.prototype.AddPoint = function(lat, lon) {
+    var t;
+    if (this.num === 0) {
+      this._lat0 = this.lat = lat;
+      this._lon0 = this.lon = lon;
+    } else {
+      t = this._geod.Inverse(this.lat, this.lon, lat, lon, this._mask);
+      this._perimetersum.Add(t.s12);
+      if (!this.polyline) {
+        this._areasum.Add(t.S12);
+        this._crossings += transit(this.lon, lon);
+      }
+      this.lat = lat;
+      this.lon = lon;
+    }
+    ++this.num;
+  };
+
+  /**
+   * @summary Add the next edge to the polygon.
+   * @param {number} azi the azimuth at the current the point (degrees).
+   * @param {number} s the length of the edge (meters).
+   * @description This specifies the new vertex in terms of the edge from the
+   *   current vertex.
+   */
+  p.PolygonArea.prototype.AddEdge = function(azi, s) {
+    var t;
+    if (this.num) {
+      t = this._geod.Direct(this.lat, this.lon, azi, s, this._mask);
+      this._perimetersum.Add(s);
+      if (!this.polyline) {
+        this._areasum.Add(t.S12);
+        this._crossings += transitdirect(this.lon, t.lon2);
+      }
+      this.lat = t.lat2;
+      this.lon = t.lon2;
+    }
+    ++this.num;
+  };
+
+  /**
+   * @summary Compute the perimeter and area of the polygon.
+   * @param {bool} reverse if true then clockwise (instead of
+   *   counter-clockwise) traversal counts as a positive area.
+   * @param {bool} sign if true then return a signed result for the area if the
+   *   polygon is traversed in the "wrong" direction instead of returning the
+   *   area for the rest of the earth.
+   * @returns {object} r where r.number is the number of vertices, r.perimeter
+   *   is the perimeter (meters), and r.area (only returned if polyline is
+   *   false) is the area (meters<sup>2</sup>).
+   * @description If the object is a polygon (and not a polygon), the perimeter
+   *   includes the length of a final edge connecting the current point to the
+   *   initial point.  If the object is a polyline, then area is nan.  More
+   *   points can be added to the polygon after this call.
+   */
+  p.PolygonArea.prototype.Compute = function(reverse, sign) {
+    var vals = {number: this.num}, t, tempsum, crossings;
+    if (this.num < 2) {
+      vals.perimeter = 0;
+      if (!this.polyline)
+        vals.area = 0;
+      return vals;
+    }
+    if (this.polyline) {
+      vals.perimeter = this._perimetersum.Sum();
+      return vals;
+    }
+    t = this._geod.Inverse(this.lat, this.lon, this._lat0, this._lon0,
+                           this._mask);
+    vals.perimeter = this._perimetersum.Sum(t.s12);
+    tempsum = new a.Accumulator(this._areasum);
+    tempsum.Add(t.S12);
+    crossings = this._crossings + transit(this.lon, this._lon0);
+    if (crossings & 1)
+      tempsum.Add( (tempsum.Sum() < 0 ? 1 : -1) * this._area0/2 );
+    // area is with the clockwise sense.  If !reverse convert to
+    // counter-clockwise convention.
+    if (!reverse)
+      tempsum.Negate();
+    // If sign put area in (-area0/2, area0/2], else put area in [0, area0)
+    if (sign) {
+      if (tempsum.Sum() > this._area0/2)
+        tempsum.Add( -this._area0 );
+      else if (tempsum.Sum() <= -this._area0/2)
+        tempsum.Add( +this._area0 );
+    } else {
+      if (tempsum.Sum() >= this._area0)
+        tempsum.Add( -this._area0 );
+      else if (tempsum < 0)
+        tempsum.Add( -this._area0 );
+    }
+    vals.area = tempsum.Sum();
+    return vals;
+  };
+
+  /**
+   * @summary Compute the perimeter and area of the polygon with a tentative
+   *   new vertex.
+   * @param {number} lat the latitude of the point (degrees).
+   * @param {number} lon the longitude of the point (degrees).
+   * @param {bool} reverse if true then clockwise (instead of
+   *   counter-clockwise) traversal counts as a positive area.
+   * @param {bool} sign if true then return a signed result for the area if the
+   *   polygon is traversed in the "wrong" direction instead of returning the
+   * @returns {object} r where r.number is the number of vertices, r.perimeter
+   *   is the perimeter (meters), and r.area (only returned if polyline is
+   *   false) is the area (meters<sup>2</sup>).
+   * @description A new vertex is *not* added to the polygon.
+   */
+  p.PolygonArea.prototype.TestPoint = function(lat, lon, reverse, sign) {
+    var vals = {number: this.num + 1}, t, tempsum, crossings, i;
+    if (this.num === 0) {
+      vals.perimeter = 0;
+      if (!this.polyline)
+        vals.area = 0;
+      return vals;
+    }
+    vals.perimeter = this._perimetersum.Sum();
+    tempsum = this.polyline ? 0 : this._areasum.Sum();
+    crossings = this._crossings;
+    for (i = 0; i < (this.polyline ? 1 : 2); ++i) {
+      t = this._geod.Inverse(
+       i === 0 ? this.lat : lat, i === 0 ? this.lon : lon,
+       i !== 0 ? this._lat0 : lat, i !== 0 ? this._lon0 : lon,
+       this._mask);
+      vals.perimeter += t.s12;
+      if (!this.polyline) {
+        tempsum += t.S12;
+        crossings += transit(i === 0 ? this.lon : lon,
+                               i !== 0 ? this._lon0 : lon);
+      }
+    }
+
+    if (this.polyline)
+      return vals;
+
+    if (crossings & 1)
+      tempsum += (tempsum < 0 ? 1 : -1) * this._area0/2;
+    // area is with the clockwise sense.  If !reverse convert to
+    // counter-clockwise convention.
+    if (!reverse)
+      tempsum *= -1;
+    // If sign put area in (-area0/2, area0/2], else put area in [0, area0)
+    if (sign) {
+      if (tempsum > this._area0/2)
+        tempsum -= this._area0;
+      else if (tempsum <= -this._area0/2)
+        tempsum += this._area0;
+    } else {
+      if (tempsum >= this._area0)
+        tempsum -= this._area0;
+      else if (tempsum < 0)
+        tempsum += this._area0;
+    }
+    vals.area = tempsum;
+    return vals;
+  };
+
+  /**
+   * @summary Compute the perimeter and area of the polygon with a tentative
+   *   new edge.
+   * @param {number} azi the azimuth of the edge (degrees).
+   * @param {number} s the length of the edge (meters).
+   * @param {bool} reverse if true then clockwise (instead of
+   *   counter-clockwise) traversal counts as a positive area.
+   * @param {bool} sign if true then return a signed result for the area if the
+   *   polygon is traversed in the "wrong" direction instead of returning the
+   * @returns {object} r where r.number is the number of vertices, r.perimeter
+   *   is the perimeter (meters), and r.area (only returned if polyline is
+   *   false) is the area (meters<sup>2</sup>).
+   * @description A new vertex is *not* added to the polygon.
+   */
+  p.PolygonArea.prototype.TestEdge = function(azi, s, reverse, sign) {
+    var vals = {number: this.num ? this.num + 1 : 0}, t, tempsum, crossings;
+    if (this.num === 0)
+      return vals;
+    vals.perimeter = this._perimetersum.Sum() + s;
+    if (this.polyline)
+      return vals;
+
+    tempsum = this._areasum.Sum();
+    crossings = this._crossings;
+    t = this._geod.Direct(this.lat, this.lon, azi, s, this._mask);
+    tempsum += t.S12;
+    crossings += transitdirect(this.lon, t.lon2);
+    t = this._geod.Inverse(t.lat2, t.lon2, this._lat0, this._lon0, this._mask);
+    vals.perimeter += t.s12;
+    tempsum += t.S12;
+    crossings += transit(t.lon2, this._lon0);
+
+    if (crossings & 1)
+      tempsum += (tempsum < 0 ? 1 : -1) * this._area0/2;
+    // area is with the clockwise sense.  If !reverse convert to
+    // counter-clockwise convention.
+    if (!reverse)
+      tempsum *= -1;
+    // If sign put area in (-area0/2, area0/2], else put area in [0, area0)
+    if (sign) {
+      if (tempsum > this._area0/2)
+        tempsum -= this._area0;
+      else if (tempsum <= -this._area0/2)
+        tempsum += this._area0;
+    } else {
+      if (tempsum >= this._area0)
+        tempsum -= this._area0;
+      else if (tempsum < 0)
+        tempsum += this._area0;
+    }
+    vals.area = tempsum;
+    return vals;
+  };
+
+})(GeographicLib.PolygonArea, GeographicLib.Geodesic,
+   GeographicLib.Math, GeographicLib.Accumulator);
+
+
+function pj_qsfn(sinphi, e, one_es) {
+  var EPS = 1e-7;
+  var con;
+  if (e >= EPS) {
+    con = e * sinphi;
+    // Proj.4 check for div0 and returns HUGE_VAL
+    // this returns +/- Infinity; effect should be same
+    return (one_es * (sinphi / (1 - con * con) -
+       (0.5 / e) * log ((1 - con) / (1 + con))));
+  } else
+    return (sinphi + sinphi);
+}
+
+
+function pj_msfn(sinphi, cosphi, es) {
+  return (cosphi / sqrt (1 - es * sinphi * sinphi));
+}
+
+
+pj_add(pj_aea, 'aea', 'Albers Equal Area', '\n\tConic Sph&Ell\n\tlat_1= lat_2=');
+pj_add(pj_leac, 'leac', 'Lambert Equal Area Conic', '\n\tConic, Sph&Ell\n\tlat_1= south');
+
+function pj_aea(P) {
+  var phi1 = pj_param(P.params, "rlat_1");
+  var phi2 = pj_param(P.params, "rlat_2");
+  pj_aea_init(P, phi1, phi2);
+}
+
+function pj_leac(P) {
+  var phi1 = pj_param(P.params, "rlat_1");
+  var phi2 = pj_param(P.params, "bsouth") ? -M_HALFPI : M_HALFPI;
+  pj_aea_init(P, phi1, phi2);
+}
+
+function pj_aea_init(P, phi1, phi2) {
+  var ec, n, c, dd, n2, rho0, rho, en, ellips,
+      cosphi, sinphi, secant, ml2, m2, ml1, m1;
+
+  P.fwd = e_fwd;
+  P.inv = e_inv;
+
+  if (fabs(phi1 + phi2) < EPS10) e_error(-21);
+  n = sinphi = sin(phi1);
+  cosphi = cos(phi1);
+  secant = fabs(phi1 - phi2) >= EPS10;
+  if ((ellips = (P.es > 0))) {
+    en = pj_enfn(P.es);
+    m1 = pj_msfn(sinphi, cosphi, P.es);
+    ml1 = pj_qsfn(sinphi, P.e, P.one_es);
+    if (secant) { /* secant cone */
+      sinphi = sin(phi2);
+      cosphi = cos(phi2);
+      m2 = pj_msfn(sinphi, cosphi, P.es);
+      ml2 = pj_qsfn(sinphi, P.e, P.one_es);
+      // Ignoring Proj.4 div0 check (above checks should prevent this)
+      n = (m1 * m1 - m2 * m2) / (ml2 - ml1);
+    }
+    ec = 1 - 0.5 * P.one_es * log((1 - P.e) / (1 + P.e)) / P.e;
+    c = m1 * m1 + n * ml1;
+    dd = 1 / n;
+    rho0 = dd * sqrt(c - n * pj_qsfn(sin(P.phi0), P.e, P.one_es));
+  } else {
+    if (secant) n = 0.5 * (n + sin(phi2));
+    n2 = n + n;
+    c = cosphi * cosphi + n2 * sinphi;
+    dd = 1 / n;
+    rho0 = dd * sqrt(c - n2 * sin(P.phi0));
+  }
+
+  function e_fwd(lp, xy) {
+    var lam = lp.lam;
+    var rho;
+    if ((rho = c - (ellips ? n * pj_qsfn(sin(lp.phi),
+      P.e, P.one_es) : n2 * sin(lp.phi))) < 0) f_error();
+    rho = dd * sqrt(rho);
+    xy.x = rho * sin(lam *= n);
+    xy.y = rho0 - rho * cos(lam);
+  }
+
+  function e_inv(xy, lp) {
+    var TOL7 = 1e-7,
+        x = xy.x,
+        y = rho0 - xy.y,
+        rho = hypot(x, y);
+    if (rho != 0) {
+      if (n < 0) {
+        rho = -rho;
+        x = -x;
+        y = -y;
+      }
+      lp.phi = rho / dd;
+      if (ellips) {
+        lp.phi = (c - lp.phi * lp.phi) / n;
+        if (fabs(ec - fabs(lp.phi)) > TOL7) {
+          if ((lp.phi = phi1_(lp.phi, P.e, P.one_es)) == HUGE_VAL)
+            i_error();
+        } else
+          lp.phi = lp.phi < 0 ? -M_HALFPI : M_HALFPI;
+      } else if (fabs(lp.phi = (c - lp.phi * lp.phi) / n2) <= 1)
+        lp.phi = asin(lp.phi);
+      else
+        lp.phi = lp.phi < 0 ? -M_HALFPI : M_HALFPI;
+      lp.lam = atan2(x, y) / n;
+    } else {
+      lp.lam = 0;
+      lp.phi = n > 0 ? M_HALFPI : -M_HALFPI;
+    }
+  }
+
+  /* determine latitude angle phi-1 */
+  function phi1_(qs, Te, Tone_es) {
+    var N_ITER = 15,
+        EPSILON = 1e-7,
+        TOL = 1e-10;
+    var Phi, sinpi, cospi, con, com, dphi, i;
+    Phi = asin (0.5 * qs);
+    if (Te < EPSILON)
+      return Phi;
+    i = N_ITER;
+    do {
+      sinpi = sin(Phi);
+      cospi = cos(Phi);
+      con = Te * sinpi;
+      com = 1 - con * con;
+      dphi = 0.5 * com * com / cospi * (qs / Tone_es -
+         sinpi / com + 0.5 / Te * log ((1 - con) / (1 + con)));
+      Phi += dphi;
+    } while (fabs(dphi) > TOL && --i);
+    return i ? Phi : HUGE_VAL;
+  }
+}
+
+
+
+function pj_enfn(es) {
+  var C00 = 1,
+      C02 = 0.25,
+      C04 = 0.046875,
+      C06 = 0.01953125,
+      C08 = 0.01068115234375,
+      C22 = 0.75,
+      C44 = 0.46875,
+      C46 = 0.01302083333333333333,
+      C48 = 0.00712076822916666666,
+      C66 = 0.36458333333333333333,
+      C68 = 0.00569661458333333333,
+      C88 = 0.3076171875;
+  var en = [], t;
+  en[0] = C00 - es * (C02 + es * (C04 + es * (C06 + es * C08)));
+  en[1] = es * (C22 - es * (C04 + es * (C06 + es * C08)));
+  en[2] = (t = es * es) * (C44 - es * (C46 + es * C48));
+  en[3] = (t *= es) * (C66 - es * C68);
+  en[4] = t * es * C88;
+  return en;
+}
+
+function pj_mlfn(phi, sphi, cphi, en) {
+  cphi *= sphi;
+  sphi *= sphi;
+  return (en[0] * phi - cphi * (en[1] + sphi*(en[2] + sphi*(en[3] + sphi*en[4]))));
+}
+
+function pj_inv_mlfn(arg, es, en) {
+  var EPS = 1e-11,
+      MAX_ITER = 10,
+      EN_SIZE = 5;
+
+  var k = 1 / (1 - es),
+      s, t, phi;
+
+  phi = arg;
+  for (var i = MAX_ITER; i>0; --i) { /* rarely goes over 2 iterations */
+    s = sin(phi);
+    t = 1 - es * s * s;
+    phi -= t = (pj_mlfn(phi, s, cos(phi), en) - arg) * (t * sqrt(t)) * k;
+    if (fabs(t) < EPS) {
+      return phi;
+    }
+  }
+  pj_ctx_set_errno( ctx, -17 );
+  return phi;
+}
+
+
+
+function aasin(v) {
+  var ONE_TOL = 1.00000000000001;
+  var av = fabs(v);
+  if (av >= 1) {
+    if (av > ONE_TOL) pj_ctx_set_errno(-19);
+    return v < 0 ? -M_HALFPI : M_HALFPI;
+  }
+  return asin(v);
+}
+
+function aacos(v) {
+  var ONE_TOL = 1.00000000000001;
+  var av = fabs(v);
+  if (av >= 1) {
+    if (av > ONE_TOL) pj_ctx_set_errno(-19);
+    return (v < 0 ? M_PI : 0);
+  }
+  return acos(v);
+}
+
+function asqrt(v) { return ((v <= 0) ? 0 : sqrt(v)); }
+
+function aatan2(n, d) {
+  var ATOL = 1e-50;
+  return ((fabs(n) < ATOL && fabs(d) < ATOL) ? 0 : atan2(n,d));
+}
 
 
 pj_add(pj_aeqd, 'aeqd', 'Azimuthal Equidistant', '\n\tAzi, Sph&Ell\n\tlat_0 guam');
@@ -18565,7 +18943,8 @@ api.internal = {
   wkt_get_geogcs_name: wkt_get_geogcs_name,
   wkt_stringify: wkt_stringify,
   mproj_insert_libcache: mproj_insert_libcache,
-  mproj_search_libcache: mproj_search_libcache
+  mproj_search_libcache: mproj_search_libcache,
+  GeographicLib: GeographicLib
 };
 
 if (typeof define == 'function' && define.amd) {
@@ -18891,11 +19270,11 @@ var substr = 'ab'.substr(-1) === 'b'
 ;
 
 }).call(this,require('_process'))
-},{"_process":23}],"rw":[function(require,module,exports){
+},{"_process":22}],"rw":[function(require,module,exports){
 exports.dash = require("./lib/rw/dash");
 exports.readFile = require("./lib/rw/read-file");
 exports.readFileSync = require("./lib/rw/read-file-sync");
 exports.writeFile = require("./lib/rw/write-file");
 exports.writeFileSync = require("./lib/rw/write-file-sync");
 
-},{"./lib/rw/dash":24,"./lib/rw/read-file":28,"./lib/rw/read-file-sync":27,"./lib/rw/write-file":30,"./lib/rw/write-file-sync":29}]},{},[]);
+},{"./lib/rw/dash":23,"./lib/rw/read-file":27,"./lib/rw/read-file-sync":26,"./lib/rw/write-file":29,"./lib/rw/write-file-sync":28}]},{},[]);
